@@ -405,17 +405,36 @@ def assign_rates(reacs, specs, rate_spec):
     thd_ns_eff = np.array(thd_ns_eff, dtype=np.float64)
 
     # thermo properties
-    poly_dim = specs[0].hi.shape[0]
+    # NASA9
+    #poly_dim = specs[0].hi.shape[0]
+    poly_dim = specs[0].hi.shape[-1]
     Ns = len(specs)
-
-    # pick out a values and T_mid
-    a_lo = np.zeros((Ns, poly_dim), dtype=np.float64)
-    a_hi = np.zeros((Ns, poly_dim), dtype=np.float64)
-    T_mid = np.zeros((Ns,), dtype=np.float64)
-    for ind, spec in enumerate(specs):
-        a_lo[ind, :] = spec.lo[:]
-        a_hi[ind, :] = spec.hi[:]
-        T_mid[ind] = spec.Trange[1]
+    nzones = np.zeros(Ns)
+    if poly_dim == 9:
+        for ind, spec in enumerate(specs):
+            # Find max number of zones across all species.
+            nzones[ind] = spec.nzones
+        zones_max = int(max(nzones))
+        # pick out a values and all T_mids
+        a_lo = np.zeros((Ns, zones_max, poly_dim), dtype=np.float64)
+        a_hi = np.zeros((Ns, zones_max, poly_dim), dtype=np.float64)
+        T_mid = np.zeros((Ns, zones_max), dtype=np.float64)
+        for ind, spec in enumerate(specs):
+            # Fill this the same way as in mech_interpret.
+            for z in range(0, spec.nzones):
+                a_lo[ind, z, :] = spec.lo[z][:]
+                a_hi[ind, z, :] = spec.hi[z][:]
+                T_mid[ind, z] = spec.Trange[z+1]
+    else:
+        # pick out a values and T_mid
+        a_lo = np.zeros((Ns, poly_dim), dtype=np.float64)
+        a_hi = np.zeros((Ns, poly_dim), dtype=np.float64)
+        T_mid = np.zeros((Ns,), dtype=np.float64)
+        zones_max = 2
+        for ind, spec in enumerate(specs):
+            a_lo[ind, :] = spec.lo[:]
+            a_hi[ind, :] = spec.hi[:]
+            T_mid[ind] = spec.Trange[1]
 
     # post processing
 
@@ -524,6 +543,8 @@ def assign_rates(reacs, specs, rate_spec):
                              'allint': net_nu_integer},
             'Nr': len(reacs),
             'Ns': len(specs),
+            'nzones': nzones,
+            'zones_max': zones_max,
             'thermo': {
                 'a_lo': a_lo,
                 'a_hi': a_hi,
@@ -3312,47 +3333,115 @@ def polyfit_kernel_gen(nicename, loopy_opts, namestore, test_size=None):
     knl_data = []
     # add problem size
     knl_data.extend(arc.initial_condition_dimension_vars(loopy_opts, test_size))
-
-    # get correctly ordered arrays / strings
-    a_lo_lp, _ = mapstore.apply_maps(namestore.a_lo, loop_index, param_ind)
-    a_hi_lp, _ = mapstore.apply_maps(namestore.a_hi, loop_index, param_ind)
-    poly_dim = namestore.a_lo.shape[1]
-    T_mid_lp, T_mid_str = mapstore.apply_maps(namestore.T_mid, loop_index)
-
     # create the input/temperature arrays
     T_lp, T_str = mapstore.apply_maps(namestore.T_arr, global_ind)
     out_lp, out_str = mapstore.apply_maps(getattr(namestore, nicename),
                                           global_ind, loop_index)
 
-    knl_data.extend([a_lo_lp, a_hi_lp, T_mid_lp, T_lp, out_lp])
+    poly_dim = namestore.a_lo.shape[-1]
+    if poly_dim == 7:
+        # get correctly ordered arrays / strings
+        a_lo_lp, _ = mapstore.apply_maps(namestore.a_lo, loop_index, param_ind)
+        a_hi_lp, _ = mapstore.apply_maps(namestore.a_hi, loop_index, param_ind)
+        T_mid_lp, T_mid_str = mapstore.apply_maps(namestore.T_mid, loop_index)
 
-    # create string indexes for a_lo/a_hi
-    a_lo_strs = [mapstore.apply_maps(namestore.a_lo, loop_index, str(i))[1]
-                 for i in range(poly_dim)]
-    a_hi_strs = [mapstore.apply_maps(namestore.a_hi, loop_index, str(i))[1]
-                 for i in range(poly_dim)]
-    # mapping of nicename -> eqn
-    eqn_maps = {'cp': Template(
-        "Ru * (T * (T * (T * (T * ${a4} + ${a3}) + ${a2}) + ${a1}) + ${a0})"),
-        'dcp': Template(
-        "Ru * (T * (T *(4 * T * ${a4} + 3 * ${a3} ) + 2 * ${a2}) + ${a1})"),
-        'h': Template(
-        "Ru * (T * (T * (T * (T * (T * ${a4} / 5 + ${a3} / 4) + ${a2} / 3) + "
-        "${a1} / 2) + ${a0}) + ${a5})"),
-        'cv': Template(
-        "Ru * (T * (T * (T * (T * ${a4} + ${a3}) + ${a2}) + ${a1}) + ${a0} - 1)"),
-        'dcv': Template(
-        "Ru * (T * (T * (4 * T * ${a4} + 3 * ${a3} ) + 2 * ${a2}) + ${a1})"),
-        'u': Template(
-        "Ru * (T * (T * (T * (T * (T * ${a4} / 5 + ${a3} / 4) + ${a2} / 3) + "
-        "${a1} / 2) + ${a0}) - T + ${a5})"),
-        'b': Template(
-        "T * (T * (T * (T * ${a4} / 20 + ${a3} / 12) + ${a2} / 6) + ${a1} / 2) + "
-        "(${a0} - 1) * logT - ${a0} + ${a6} - ${a5} * Tinv"),
-        'db': Template(
-        "T * (T * (T * ${a4} / 5 + ${a3} / 4) + ${a2} / 3) + ${a1} / 2 + "
-        "Tinv * (${a0} - 1 + ${a5} * Tinv)")}
-    # create lo / hi equation
+        # create the input/temperature arrays
+        T_lp, T_str = mapstore.apply_maps(namestore.T_arr, global_ind)
+        out_lp, out_str = mapstore.apply_maps(getattr(namestore, nicename),
+                                                global_ind, loop_index)
+
+        knl_data.extend([a_lo_lp, a_hi_lp, T_mid_lp, T_lp, out_lp])
+
+        # create string indexes for a_lo/a_hi
+        a_lo_strs = [mapstore.apply_maps(namestore.a_lo, loop_index, str(i))[1]
+                    for i in range(poly_dim)]
+        a_hi_strs = [mapstore.apply_maps(namestore.a_hi, loop_index, str(i))[1]
+                    for i in range(poly_dim)]
+        # mapping of nicename -> eqn
+        eqn_maps = {'cp': Template(
+            "Ru * (T * (T * (T * (T * ${a4} + ${a3}) + ${a2}) + ${a1}) + ${a0})"),
+            'dcp': Template(
+            "Ru * (T * (T *(4 * T * ${a4} + 3 * ${a3} ) + 2 * ${a2}) + ${a1})"),
+            'h': Template(
+            "Ru * (T * (T * (T * (T * (T * ${a4} / 5 + ${a3} / 4) + ${a2} / 3) + "
+            "${a1} / 2) + ${a0}) + ${a5})"),
+            'cv': Template(
+            "Ru * (T * (T * (T * (T * ${a4} + ${a3}) + ${a2}) + ${a1}) + ${a0} - 1)"),
+            'dcv': Template(
+            "Ru * (T * (T * (4 * T * ${a4} + 3 * ${a3} ) + 2 * ${a2}) + ${a1})"),
+            'u': Template(
+            "Ru * (T * (T * (T * (T * (T * ${a4} / 5 + ${a3} / 4) + ${a2} / 3) + "
+            "${a1} / 2) + ${a0}) - T + ${a5})"),
+            'b': Template(
+            "T * (T * (T * (T * ${a4} / 20 + ${a3} / 12) + ${a2} / 6) + ${a1} / 2) + "
+            "(${a0} - 1) * logT - ${a0} + ${a6} - ${a5} * Tinv"),
+            'db': Template(
+            "T * (T * (T * ${a4} / 5 + ${a3} / 4) + ${a2} / 3) + ${a1} / 2 + "
+            "Tinv * (${a0} - 1 + ${a5} * Tinv)")}
+        instructions=Template("""
+            if ${Tval} < ${T_mid_str}
+                ${out_str} = ${lo_eq} {id=low, nosync=hi}
+            else
+                ${out_str} = ${hi_eq} {id=hi, nosync=low}
+            end
+        """)
+    else:
+        zone_index = 'l'
+        zone_index_m1 = 'l-1'
+        # Will need extra iname for zones loop
+        nzones_lp, zone_l = mapstore.apply_maps(
+                namestore.nzones, loop_index)
+        extra_inames = [(zone_index, '1 <= l < {}'.format(
+            namestore.zones_max))]
+        # get correctly ordered arrays / strings
+        a_lo_lp, _ = mapstore.apply_maps(namestore.a_lo, loop_index, zone_index, param_ind)
+        a_hi_lp, _ = mapstore.apply_maps(namestore.a_hi, loop_index, zone_index, param_ind)
+        T_mid_lp, T_mid_str = mapstore.apply_maps(namestore.T_mid, loop_index, zone_index)
+        T_mid_m1_lp, T_mid_m1_str = mapstore.apply_maps(namestore.T_mid, loop_index, zone_index_m1)
+
+        knl_data.extend([a_lo_lp, a_hi_lp, T_mid_lp, T_lp, out_lp])
+
+        # create string indexes for a_lo/a_hi
+        a_lo_strs = [mapstore.apply_maps(namestore.a_lo, loop_index, zone_index, str(i))[1]
+                    for i in range(poly_dim)]
+        a_lo_first_strs = [mapstore.apply_maps(namestore.a_lo, loop_index, 0, str(i))[1]
+                    for i in range(poly_dim)]
+        a_hi_strs = [mapstore.apply_maps(namestore.a_hi, loop_index, zone_index, str(i))[1]
+                    for i in range(poly_dim)]
+        eqn_maps = {'cp': Template(
+            "Ru * (T * (T * (T * (T * ${a6} + ${a5}) + ${a4}) + ${a3}) + ${a2} + Tinv * (Tinv * ${a0} + ${a1}))"),
+            'dcp': Template(
+            "Ru * (T * (T *(4 * T * ${a6} + 3 * ${a5} ) + 2 * ${a4}) + ${a3} - Tinv * (Tinv * (${a1} + 2 * Tinv * ${a0})))"),
+            'h': Template(
+            "Ru * (T * (T * (T * (T * (T * ${a6} / 5 + ${a5} / 4) + ${a4} / 3) + "
+            "${a3} / 2) + ${a2}) + ${a7} - Tinv * ${a0} + logT * ${a1})"),
+            'cv': Template(
+            "Ru * (T * (T * (T * (T * ${a6} + ${a5}) + ${a4}) + ${a3}) + ${a2} + Tinv * (Tinv * ${a0} + ${a1}) - 1)"),
+            'dcv': Template(
+            "Ru * (T * (T *(4 * T * ${a6} + 3 * ${a5} ) + 2 * ${a4}) + ${a3} - Tinv * (Tinv * (${a1} + 2 * Tinv * ${a0})))"),
+            'u': Template(
+            "Ru * (T * (T * (T * (T * (T * ${a6} / 5 + ${a5} / 4) + ${a4} / 3) + "
+            "${a3} / 2) + ${a2}) + ${a7} - Tinv * ${a0} - T + logT * ${a1})"),
+            'b': Template(
+            "T * (T * (T * (T * ${a6} / 20 + ${a5} / 12) + ${a4} / 6) + ${a3} / 2) + "
+            "(${a2} - 1) * logT - ${a2} + ${a8} - ${a7} * Tinv + Tinv * Tinv * ${a0} / 2 + Tinv * (-1 - logT) * ${a1}"),
+            'db': Template(
+            "T * (T * (T * ${a6} / 5 + ${a5} / 4) + ${a4} / 3) + ${a3} / 2 + "
+            "Tinv * (${a2} - 1 + ${a7} * Tinv) - Tinv * Tinv * Tinv * ${a0} + Tinv * Tinv * logT * ${a1}")}
+        instructions = Template("""
+            ${out_str} = ${lo_first_eq} {id=lo_first}
+            for ${zone_index}
+                if ${Tval} < ${T_mid_str} 
+                    if T > ${T_mid_m1_str}
+                        ${out_str} = ${lo_eq} {id=lo, dep=lo_first}
+                    end
+                end
+            end
+        """)
+        lo_first_eq = eqn_maps[nicename].safe_substitute(
+            {'a' + str(i): a_lo for i, a_lo in enumerate(a_lo_first_strs)})
+
+    # create lo / hi equations
     lo_eq = eqn_maps[nicename].safe_substitute(
         {'a' + str(i): a_lo for i, a_lo in enumerate(a_lo_strs)})
     hi_eq = eqn_maps[nicename].safe_substitute(
@@ -3365,19 +3454,16 @@ def polyfit_kernel_gen(nicename, loopy_opts, namestore, test_size=None):
     # create a precomputed instruction generator
     precompute = ic.PrecomputedInstructions(loopy_opts)
     preinstructs = [precompute(Tval, T_str, 'VAL', guard=guard)]
-    if nicename in ['db', 'b']:
-        preinstructs.append(precompute('Tinv', T_str, 'INV', guard=guard))
-        if nicename == 'b':
-            preinstructs.append(precompute('logT', T_str, 'LOG', guard=guard))
+    preinstructs.append(precompute('Tinv', T_str, 'INV', guard=guard))
+    preinstructs.append(precompute('logT', T_str, 'LOG', guard=guard))
 
-    return k_gen.knl_info(instructions=Template("""
-        if ${Tval} < ${T_mid_str}
-            ${out_str} = ${lo_eq} {id=low, nosync=hi}
-        else
-            ${out_str} = ${hi_eq} {id=hi, nosync=low}
-        end
-        """).safe_substitute(**locals()),
+    # FIXME: here, we cycle through and replace
+    # each time until it hits the actual temp limit, but this is
+    # neither ideal nor performant. Break statement?
+    return k_gen.knl_info(instructions=instructions
+                          .safe_substitute(**locals()),
                           kernel_data=knl_data,
+                          extra_inames=extra_inames,
                           pre_instructions=preinstructs,
                           name='eval_{}'.format(nicename),
                           parameters={'Ru': chem.RU},

@@ -1020,12 +1020,15 @@ def read_mech_ct(filename=None, gas=None, sort_type=None):
     # Species
     specs = []
     for i, sp in enumerate(gas.species_names):
-        spec = chem.SpecInfo(sp)
-
-        spec.mw = gas.molecular_weights[i]
-
         # Get Species object
         species = gas.species(i)
+
+        if isinstance(species.thermo, ct.NasaPoly2):
+            spec = chem.SpecInfo(sp)
+        elif isinstance(species.thermo, ct.Nasa9PolyMultiTempRegion):
+            spec = chem.SpecInfoN9(sp)
+
+        spec.mw = gas.molecular_weights[i]
 
         # Species elemental composition
         for e in species.composition:
@@ -1033,12 +1036,28 @@ def read_mech_ct(filename=None, gas=None, sort_type=None):
 
         # Species thermodynamic properties
         coeffs = species.thermo.coeffs
-        spec.Trange = [species.thermo.min_temp, coeffs[0],
-                       species.thermo.max_temp
-                       ]
         if isinstance(species.thermo, ct.NasaPoly2):
+            spec.Trange = [species.thermo.min_temp, coeffs[0],
+                            species.thermo.max_temp
+                            ]
             spec.hi = coeffs[1:8]
             spec.lo = coeffs[8:15]
+        elif isinstance(species.thermo, ct.Nasa9PolyMultiTempRegion):
+            spec.nzones = int(coeffs[0])
+            spec.lo = np.resize(spec.lo, (spec.nzones, 9))
+            spec.hi = np.resize(spec.hi, (spec.nzones, 9))
+            # Set up temperature brackets.
+            for i in range(0, spec.nzones):
+                spec.Trange.append(coeffs[int(i*11) + 1])
+                # Add the upper bound:
+                if i == spec.nzones-1:
+                    spec.Trange.append(coeffs[int(i*11) + 2])
+            # Read in the coeffs.
+            for i in range(0, spec.nzones-1):
+                spec.lo[i][:] = coeffs[(int(i*11)+3):(int(i*11)+12)]
+                spec.hi[i][:] = coeffs[(int(i*11)+14):(int(i*11)+23)]
+            # Fill low range for the last zone as well
+            spec.lo[int(spec.nzones-1)][:] = coeffs[((spec.nzones-1)*11+3):((spec.nzones-1)*11+12)]
         else:
             logger = logging.getLogger(__name__)
             logger.error('Unsupported thermo form for species ' + sp)

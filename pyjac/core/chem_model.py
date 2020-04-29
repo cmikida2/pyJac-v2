@@ -494,6 +494,7 @@ class SpecInfo(object):
     def __init__(self, name):
         self.name = name
 
+        self.nasa9 = False
         # elemental composition
         self.elem = []
         # molecular weight [kg/kmol]
@@ -512,6 +513,128 @@ class SpecInfo(object):
 
         # remove any zero elements
         self.elem = [x for x in self.elem if x[1] != 0]
+
+
+class SpecInfoN9(object):
+    """Species class.
+
+    Contains all information about a single species.
+
+    Attributes
+    ----------
+    name : str
+        Name of species.
+    elem : list of list of [str, float]
+        Elemental composition in [element, number] pairs.
+    mw : float
+        Molecular weight.
+    hi : list of float
+        High-temperature range NASA thermodynamic coefficients.
+    lo : list of float
+        Low-temperature range NASA thermodynamic coefficients.
+    Trange : list of float
+        Temperatures defining ranges of thermodynamic polynomial fits
+        (low, middle, high), default ([300, 1000, 5000]).
+
+    """
+
+    def __eq__(self, other):
+        # check equality to other spec info
+        try:
+            # check elements
+            assert type(self) == type(other)
+            assert len(self.elem) == len(other.elem)
+            for i in range(len(self.elem)):
+                assert self.elem[i][0] == other.elem[i][0]
+                assert self.elem[i][1] == other.elem[i][1]
+            # check mw
+            assert np.isclose(self.mw, other.mw)
+            # check thermo params
+            assert np.allclose(self.hi, other.hi)
+            assert np.allclose(self.lo, other.lo)
+            assert np.allclose(self.Trange, other.Trange)
+            return True
+
+        except AssertionError:
+            return False
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.warn('Unknown exception occured in species equality testing,')
+            logging.exception(e)
+            return False
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __init__(self, name):
+        self.name = name
+
+        self.nasa9 = True
+        self.nzones = 2
+        # elemental composition
+        self.elem = []
+        # molecular weight [kg/kmol]
+        self.mw = 0.0
+        # high-temp range thermodynamic coefficients
+        self.hi = np.zeros((2,9))
+        # low-temp range thermodynamic coefficients
+        self.lo = np.zeros((2,9))
+        # temperature [K] range for thermodynamic coefficients
+        self.Trange = []
+
+    def finalize(self):
+        """
+        Cleans up the :class:`SpecInfo`, removing any unnecessary elements
+        """
+
+        # remove any zero elements
+        self.elem = [x for x in self.elem if x[1] != 0]
+
+
+def calc_spec_smhN9(T, specs):
+    """Calculate standard-state entropies minus enthalpies for all species.
+
+    Parameters
+    ----------
+    T : float
+        Temperature of gas mixture.
+    specs : list of SpecInfo
+        List of species.
+
+    Returns
+    -------
+    spec_smh : list of float
+        List of species' standard-state entropies minus enthalpies.
+
+    """
+
+    spec_smh = []
+
+    Tlog = math.log(T)
+    T2 = T * T
+    T3 = T2 * T
+    T4 = T3 * T
+
+    Tm2 = 1 / (2*T2)
+    Thalf = T / 2.0
+    T2 = T2 / 6.0
+    T3 = T3 / 12.0
+    T4 = T4 / 20.0
+
+    for sp in specs:
+        for i in range(0, nzones):
+            if T <= sp.Trange[i+1] and T >= sp.Trange[i]:
+                # import the proper array of coeffs.
+                smh = (sp.lo[i][0] * Tm2 + sp.lo[i][1] * ((-1 - Tlog) / T) + 
+                   sp.lo[i][2] * (Tlog - 1.0) + sp.lo[i][3] * Thalf + sp.lo[i][4] *
+                   T2 + sp.lo[i][5] * T3 + sp.lo[i][6] * T4 - (sp.lo[i][7] / T) +
+                   sp.lo[i][6]
+                   )
+                break
+
+        spec_smh.append(smh)
+
+    return (spec_smh)
 
 
 def calc_spec_smh(T, specs):

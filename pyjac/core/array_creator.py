@@ -1913,6 +1913,8 @@ class NameStore(object):
         self.jac_format = loopy_opts.jac_format
         self.jac_type = loopy_opts.jac_type
         self._add_arrays(rate_info, test_size)
+        # NASA9: maximum number of temperature zones across all species
+        self.zones_max = rate_info['zones_max']
 
     def __getattr__(self, name):
         """
@@ -2976,6 +2978,11 @@ class NameStore(object):
                              dtype=rate_info['thermo']['T_mid'].dtype,
                              initializer=rate_info['thermo']['T_mid'],
                              shape=rate_info['thermo']['T_mid'].shape,
+                             order=self.order)
+        # NASA9: add nzones array here.
+        self.nzones = creator('nzones',
+                             dtype=np.float64,
+                             shape=rate_info['Ns'],
                              order=self.order)
         for name in [constant_pressure_specific_heat, constant_volume_specific_heat,
                      internal_energy_array, enthalpy_array,
