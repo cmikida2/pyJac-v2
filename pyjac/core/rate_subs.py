@@ -3140,6 +3140,9 @@ def get_specrates_kernel(reacs, specs, loopy_opts, conp=True, test_size=None,
         # add the initial third body conc eval kernel
         __add_knl(get_thd_body_concs(loopy_opts,
                                      nstore, test_size))
+        # and the Pr evals
+        __add_knl(get_rxn_pres_mod(loopy_opts,
+                                   nstore, test_size))
 
     # check for falloff
     if rate_info['fall']['num']:
@@ -3178,9 +3181,10 @@ def get_specrates_kernel(reacs, specs, loopy_opts, conp=True, test_size=None,
 
     # check for falloff
     if rate_info['fall']['num']:
-        # and the Pr evals
-        __add_knl(get_rxn_pres_mod(loopy_opts,
-                                   nstore, test_size))
+        if not rate_info['thd']['num']:
+            # and the Pr evals
+            __add_knl(get_rxn_pres_mod(loopy_opts,
+                                    nstore, test_size))
 
     # add ROP
     __add_knl(get_rop(loopy_opts,
@@ -3340,6 +3344,7 @@ def polyfit_kernel_gen(nicename, loopy_opts, namestore, test_size=None):
 
     poly_dim = namestore.a_lo.shape[-1]
     if poly_dim == 7:
+        extra_inames=[]
         # get correctly ordered arrays / strings
         a_lo_lp, _ = mapstore.apply_maps(namestore.a_lo, loop_index, param_ind)
         a_hi_lp, _ = mapstore.apply_maps(namestore.a_hi, loop_index, param_ind)
